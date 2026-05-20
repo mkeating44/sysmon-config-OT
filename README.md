@@ -23,7 +23,9 @@ It is recommended to increase the size of your Windows Event Viewer log for Sysm
 The Sysmon logging channel in Windows is created on installation. Best practice is to increase the size of this log in order to preserve local events, however this is not well documented. A 2GB maximum log size can be configured as follows:
   
 Key path: HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\WINEVT\Channels\Microsoft-Windows-Sysmon/Operational
+
 Value (DWORD): MaxSize
+
 Value data: HEX: 0x80000000, Decimal: 2147483648
   
 For Active Directory environments, use Group Policy to set this across the environment where possible. Adjust the decimal value (bytes) as required.

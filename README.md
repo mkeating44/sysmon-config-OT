@@ -18,6 +18,16 @@ When used in Windows Domain environments, I highly recommend using a PowerShell 
 This configuration file is used in high density, secure Operational Technology environments today and can be used as is. HOWEVER! Ensure you test this in your environment, understand what it is doing and change as you need. 
 This file can and should be used as part of a logging plan to capture events on device and be managed by a SIEM and SOC. Not every event generated should cause alarm, but can be used for correlation during investigation.
 
+It is recommended to increase the size of your Windows Event Viewer log for Sysmon to retain events. Guidance on sizing is plentiful (for example, the Australian Cyber Security Centre recommend 2GB for security logs), however guidance on how to do this automatically for the Sysmon event channel is minimal. Thankfully, I've worked that out for you.
+
+The Sysmon logging channel in Windows is created on installation. Best practice is to increase the size of this log in order to preserve local events, however this is not well documented. A 2GB maximum log size can be configured as follows:
+  
+Key path: HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\WINEVT\Channels\Microsoft-Windows-Sysmon/Operational
+Value (DWORD): MaxSize
+Value data: HEX: 0x80000000, Decimal: 2147483648
+  
+For Active Directory environments, use Group Policy to set this across the environment where possible. Adjust the decimal value (bytes) as required.
+
 TO DO:
 
 - Validate the Sysmon configuration works in Linux environments.

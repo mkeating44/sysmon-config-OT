@@ -1,16 +1,55 @@
 <!--
   sysmon-config | A Sysmon configuration focused on default high-quality event tracing and easy customization by the community
-  Source version:	74 | Date: 2021-07-08
+  Source version:	73 | Date: 2021-02-16
   Source project:	https://github.com/SwiftOnSecurity/sysmon-config
   Source license:	Creative Commons Attribution 4.0 | You may privatize, fork, edit, teach, publish, or deploy for commercial use - with attribution in the text.
 
-  Fork version:	<N/A>
-  Fork author:	<N/A>
-  Fork project:	<N/A>
-  Fork license:	<N/A>
+  Fork version:	0.1
+  Fork author:	Michael Keating
+  Fork project:	sysmon-config-ot
+  Fork license:	MIT License - please read below.
+  
+  Additional Licensing information:
+  Some configurations are sourced from Olaf Hartong's Sysmon Configuration, which is based on SwiftOnSecurity's configuration. Newer Sysmon event detections are configured using Olaf's config.
+  Readme: https://github.com/olafhartong/sysmon-modular/blob/master/README.md
+  Used under MIT License:
+  Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
 
-  REQUIRED: Sysmon version 13 or higher (due to changes in syntax and bug-fixes)
+  The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+  
+  Operational Technology Notes:	
+  
+  This Sysmon Config has been forked and changed for use in an Operational Technology Environment. The config is mostly unchanged as it just works. 
+  All original comments are left as they provide a great description of how it works. Understanding this is key to understand the logged output.
+  Target state is to have relevant logs exported to a SIEM for a SOC to manage. 
+  The config is kept as current as possible based on Sysmon releases and includes new features as released. It incorporates forks and additional sections as required to make new functions work.
+  This configuration is Operational Technology specific, however the detections are mostly the same - we need to know if something out of the ordinary is happening. Each section has commentary
+  where config has been changed to remove IT specific exclusions that we should be interested in - as an example, if we don't allow Office installs, we really want to detect when it is installed.
+
+  The preference is to deploy Sysmon using a Scheduled Task configured in Group Policy for domain joined Windows devices. There is a note below on defence against an attacker, this install approch
+  provides a number of mitigations around an attacker removing Sysmon from a system:
+
+  - Group Policy runs approximately every 60 minutes. If the Scheduled Task is removed, it will be installed again during Group Policy refresh.
+  - The scheduled task runs a batch file that calls a PowerShell script. This script does some checks to make sure Sysmon is installed, is running, has the latet version and the latest config.
+  - If an attacker removes Sysmon, the script will re-install it. If it stops the service, is starts it again. If a custom config is deployed, it removes it and deploys the correct file.
+  - The batch file, PowerShell script, Sysmon file and Sysmon config file are stored on the Netlogon folder in the domain. All domain PCs have access to this and this cannot be tampered with without compromising the Domain Controller.
+
+  While not 100% bulletproof, this approach gives many layers to making sure Sysmon is running on end devices. The final mitigation would be a SOC making sure logs are being received and questioning if they stop.
+  
+  REQUIRED: Sysmon version 15 or higher (due to changes in syntax and bug-fixes)
 	https://docs.microsoft.com/en-us/sysinternals/downloads/sysmon
+
+  The Sysmon logging channel in Windows is created on installation. Best practice is to increase the size of this log in order to preserve local events, however this is not well documented. The ACSC Essential 8 recommend a size of 2GB for security logging, which can be configured as follows:
+  
+  Key path: HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\WINEVT\Channels\Microsoft-Windows-Sysmon/Operational
+  Value (DWORD): MaxSize
+  Value data: HEX: 0x80000000, Decimal: 2147483648
+  
+  For Active Directory environments, use Group Policy to set this across the environment where possible. Adjust the decimal value (bytes) as required.
+
+  ORIGINAL NOTES AS FOLLOWS:
 
   NOTE: To collect Sysmon logs centrally for free, see https://aka.ms/WEF | Command to allow log access to the Network Service:
 	wevtutil.exe sl Microsoft-Windows-Sysmon/Operational /ca:O:BAG:SYD:(A;;0xf0005;;;SY)(A;;0x5;;;BA)(A;;0x1;;;S-1-5-32-573)(A;;0x1;;;NS)
@@ -60,15 +99,16 @@
 
 -->
 
-<Sysmon schemaversion="4.50">
+<Sysmon schemaversion="4.90">
 	<!--SYSMON META CONFIG-->
 	<HashAlgorithms>md5,sha256,IMPHASH</HashAlgorithms> <!-- Both MD5 and SHA256 are the industry-standard algorithms. Remove IMPHASH if you do not use DLL import fingerprinting. -->
-	<CheckRevocation/> <!-- Check loaded drivers, log if their code-signing certificate has been revoked, in case malware stole one to sign a kernel driver -->
+	<CheckRevocation>False</CheckRevocation> <!-- Check loaded drivers, log if their code-signing certificate has been revoked, in case malware stole one to sign a kernel driver -->
+	<DnsLookup>False</DnsLookup>
+	<ArchiveDirectory>Sysmon</ArchiveDirectory>
 
 	<!-- <ImageLoad/> --> <!-- Would manually force-on ImageLoad monitoring, even without configuration below. Included only documentation. -->
 	<!-- <ProcessAccessConfig/> --> <!-- Would manually force-on ProcessAccess monitoring, even without configuration below. Included only documentation. -->
 	<!-- <PipeMonitoringConfig/> --> <!-- Would manually force-on PipeCreated / PipeConnected events, even without configuration below. Included only documentation. -->
-	<!-- <ArchiveDirectory> -->
 
 	<EventFiltering>
 
@@ -79,10 +119,16 @@
 			Beware of Masquerading, where attackers imitate the names and paths of legitimate tools. Ideally, you'd use both file path and
 			code signatures to validate, but Sysmon does not support that. Look into AppLocker/WindowsDeviceGuard for whitelisting support. -->
 
+	<!--OT OPERATIONS: Most Windows only processes are not worth including and should stay in the Exclude section. If you don't use Edge or Chrome consider removing/commenting them out below.
+			You could potentially exclude processes you trust that create noise by launching a lot of processes (such as PostgreSQL), but risk losing fidelity. For time critical systems
+			it may be useful to exclude their process logging, but as this would be high value for an attacker you should be very specific on what is excluded.
+	-->
+
 		<!--DATA: UtcTime, ProcessGuid, ProcessID, Image, FileVersion, Description, Product, Company, CommandLine, CurrentDirectory, User, LogonGuid, LogonId, TerminalSessionId, IntegrityLevel, Hashes, ParentProcessGuid, ParentProcessId, ParentImage, ParentCommandLine, RuleName-->
 	<RuleGroup name="" groupRelation="or">
 		<ProcessCreate onmatch="exclude">
 			<!--SECTION: Microsoft Windows-->
+			<ParentCommandLine condition="is">"C:\Program Files\Microsoft Monitoring Agent\Agent\MonitoringHost.exe" -Embedding</ParentCommandLine>
 			<CommandLine condition="begin with"> "C:\Windows\system32\wermgr.exe" "-queuereporting_svc" </CommandLine> <!--Windows:Windows error reporting/telemetry-->
 			<CommandLine condition="begin with">C:\Windows\system32\DllHost.exe /Processid</CommandLine> <!--Windows-->
 			<CommandLine condition="begin with">C:\Windows\system32\wbem\wmiprvse.exe -Embedding</CommandLine> <!--Windows: WMI provider host-->
@@ -131,7 +177,7 @@
 			<CommandLine condition="is">C:\Windows\system32\svchost.exe -k LocalService -p -s BthAvctpSvc</CommandLine>
 			<CommandLine condition="is">C:\Windows\system32\svchost.exe -k localService -s nsi</CommandLine>
 			<CommandLine condition="is">C:\Windows\system32\svchost.exe -k localService -s w32Time</CommandLine>
-      <CommandLine condition="is">C:\Windows\system32\svchost.exe -k localServiceAndNoImpersonation</CommandLine> <!--Windows: Network services-->
+		    <CommandLine condition="is">C:\Windows\system32\svchost.exe -k localServiceAndNoImpersonation</CommandLine> <!--Windows: Network services-->																				
 			<CommandLine condition="is">C:\Windows\system32\svchost.exe -k localServiceAndNoImpersonation -p</CommandLine> <!--Windows: Network services-->
 			<CommandLine condition="is">C:\Windows\system32\svchost.exe -k localServiceNetworkRestricted -s Dhcp</CommandLine> <!--Windows: Network services-->
 			<CommandLine condition="is">C:\Windows\system32\svchost.exe -k localServiceNetworkRestricted -s EventLog</CommandLine>
@@ -213,16 +259,6 @@
 			<ParentImage condition="is">C:\Windows\Microsoft.NET\Framework64\v4.0.30319\ngentask.exe</ParentImage> <!--Microsoft:DotNet-->
 			<ParentImage condition="is">C:\Windows\Microsoft.NET\Framework\v4.0.30319\mscorsvw.exe</ParentImage> <!--Microsoft:DotNet-->
 			<ParentImage condition="is">C:\Windows\Microsoft.NET\Framework\v4.0.30319\ngentask.exe</ParentImage> <!--Microsoft:DotNet: Spawns thousands of ngen.exe processes-->
-			<!--SECTION: Microsoft:Office-->
-			<Image condition="is">C:\Program Files\Microsoft Office\Office16\MSOSYNC.EXE</Image> <!--Microsoft:Office: Background process for SharePoint/Office365 connectivity-->
-			<Image condition="is">C:\Program Files (x86)\Microsoft Office\Office16\MSOSYNC.EXE</Image> <!--Microsoft:Office: Background process for SharePoint/Office365 connectivity-->
-			<Image condition="is">C:\Program Files\Common Files\Microsoft Shared\OfficeSoftwareProtectionPlatform\OSPPSVC.EXE</Image> <!--Microsoft:Office: Licensing service-->
-			<Image condition="is">C:\Program Files\Microsoft Office\Office16\msoia.exe</Image> <!--Microsoft:Office: Telemetry collector-->
-			<Image condition="is">C:\Program Files (x86)\Microsoft Office\root\Office16\officebackgroundtaskhandler.exe</Image>
-			<!--SECTION: Microsoft:Office:Click2Run-->
-			<Image condition="is">C:\Program Files\Common Files\Microsoft Shared\ClickToRun\OfficeC2RClient.exe</Image> <!--Microsoft:Office: Background process-->
-			<ParentImage condition="is">C:\Program Files\Common Files\Microsoft Shared\ClickToRun\OfficeClickToRun.exe</ParentImage> <!--Microsoft:Office: Background process-->
-			<ParentImage condition="is">C:\Program Files\Common Files\Microsoft Shared\ClickToRun\OfficeC2RClient.exe</ParentImage> <!--Microsoft:Office: Background process-->
 			<!--SECTION: Windows: Media player-->
 			<Image condition="is">C:\Program Files\Windows Media Player\wmpnscfg.exe</Image> <!--Windows: Windows Media Player Network Sharing Service Configuration Application-->
 			<!--SECTION: Google-->
@@ -230,7 +266,7 @@
 			<CommandLine condition="begin with">"C:\Program Files\Google\Chrome\Application\chrome.exe" --type=</CommandLine> <!--Google:Chrome: massive command-line arguments-->
 		</ProcessCreate>
 	</RuleGroup>
-
+	
 	<!--SYSMON EVENT ID 2 : FILE CREATION TIME RETROACTIVELY CHANGED IN THE FILESYSTEM [FileCreateTime]-->
 		<!--COMMENT:	[ https://attack.mitre.org/wiki/Technique/T1099 ] -->
 
@@ -240,12 +276,15 @@
 			<Image name="T1099" condition="begin with">C:\Users</Image> <!--Look for timestomping in user area, usually nothing should be doing that here-->
 			<TargetFilename name="T1099" condition="end with">.exe</TargetFilename> <!--Look for backdated executables anywhere-->
 			<Image name="T1099" condition="begin with">\Device\HarddiskVolumeShadowCopy</Image> <!--Nothing should be written here | Credit: @SBousseaden [ https://twitter.com/SBousseaden/status/1133030955407630336 ] -->
+			<Image name="technique_id=T1070.006,technique_name=Timestomp" condition="begin with">C:\Temp</Image>
+			<Image name="technique_id=T1070.006,technique_name=Timestomp" condition="begin with">C:\Windows\Temp</Image>
+			<Image name="technique_id=T1070.006,technique_name=Timestomp" condition="begin with">C:\Tmp</Image>
 		</FileCreateTime>
 	</RuleGroup>
 
 	<RuleGroup name="" groupRelation="or">
 		<FileCreateTime onmatch="exclude">
-			<Image condition="image">OneDrive.exe</Image> <!--OneDrive constantly changes file times-->
+			<!--<Image condition="image">OneDrive.exe</Image>--> <!--OneDrive constantly changes file times. Commented out for OT deployment, but if it is used remove comment tags.-->
 			<Image condition="image">C:\Windows\system32\backgroundTaskHost.exe</Image>
 			<Image condition="contains">setup</Image> <!--Ignore setups-->
 			<Image condition="contains">install</Image> <!--Ignore setups-->
@@ -253,7 +292,6 @@
 			<Image condition="end with">redist.exe</Image> <!--Ignore setups-->
 			<Image condition="is">msiexec.exe</Image> <!--Ignore setups-->
 			<Image condition="is">TrustedInstaller.exe</Image> <!--Ignore setups-->
-			<TargetFilename condition="contains">\NVIDIA\NvBackend\ApplicationOntology\</TargetFilename> <!--NVIDIA GeForce Experience Application Ontology, 1000's of events in user profile-->
 		</FileCreateTime>
 	</RuleGroup>
 
@@ -263,7 +301,7 @@
 		<!--TECHNICAL:	For the DestinationHostname, Sysmon uses the GetNameInfo API, which will often not have any information, and may just be a CDN. This is NOT reliable for filtering.-->
 		<!--TECHNICAL:	For the DestinationPortName, Sysmon uses the GetNameInfo API for the friendly name of ports you see in logs.-->
 		<!--TECHNICAL:	These exe do not initiate their connections, and thus includes do not work in this section: BITSADMIN NLTEST-->
-
+		
 		<!-- https://www.first.org/resources/papers/conf2017/APT-Log-Analysis-Tracking-Attack-Tools-by-Audit-Policy-and-Sysmon.pdf -->
 
 		<!--DATA: UtcTime, ProcessGuid, ProcessId, Image, User, Protocol, Initiated, SourceIsIpv6, SourceIp, SourceHostname, SourcePort, SourcePortName, DestinationIsIpV6, DestinationIp, DestinationHostname, DestinationPort, DestinationPortName-->
@@ -284,6 +322,7 @@
 			<Image condition="image">certutil.exe</Image> <!--Windows: Certificate tool can contact outbound | Credit @ion-storm @FVT [ https://twitter.com/FVT/status/834433734602530817 ] -->
 			<Image condition="image">cmd.exe</Image> <!--Windows: Remote command prompt-->
 			<Image condition="image">cmstp.exe</Image> <!--Windows: Connection manager profiles can launch executables from WebDAV [ https://twitter.com/NickTyrer/status/958450014111633408 ] | Credit @NickTyrer @Oddvarmoe @KyleHanslovan @subTee -->
+			<Image condition="image">winlogon.exe</Image> <!-- BlackLotus network connection detection -->
 			<Image condition="image">cscript.exe</Image> <!--WindowsScriptingHost: | Credit @Cyb3rOps [ https://gist.github.com/Neo23x0/a4b4af9481e01e749409 ] -->
 			<Image condition="image">driverquery.exe</Image> <!--Windows: Remote recognisance of system configuration, oudated/vulnerable drivers -->
 			<Image condition="image">dsquery.exe</Image> <!--Microsoft: Query Active Directory -->
@@ -302,7 +341,7 @@
 			<Image condition="image">notepad.exe</Image> <!--Windows: [ https://secrary.com/ReversingMalware/CoinMiner/ ] [ https://blog.cobaltstrike.com/2013/08/08/why-is-notepad-exe-connecting-to-the-internet/ ] -->
 			<Image condition="image">nslookup.exe</Image> <!--Windows: Retrieve data over DNS -->
 			<Image condition="image">powershell.exe</Image> <!--Windows: PowerShell interface-->
-			<Image condition="image">powershell_ise.exe</Image> <!--Windows: PowerShell interface-->
+			<Image condition="image">powershell_ise.exe</Image> <!--Windows: PowerShell interface-->																	   
 			<Image condition="image">qprocess.exe</Image> <!--Windows: [ https://www.first.org/resources/papers/conf2017/APT-Log-Analysis-Tracking-Attack-Tools-by-Audit-Policy-and-Sysmon.pdf ] -->
 			<Image condition="image">qwinsta.exe</Image> <!--Windows: Query remote sessions | Credit @ion-storm -->
 			<Image condition="image">qwinsta.exe</Image> <!--Windows: Remotely query login sessions on a server or workstation | Credit @ion-storm -->
@@ -317,7 +356,6 @@
 			<Image condition="image">tasklist.exe</Image> <!--Windows: List processes, has remote ability -->
 			<Image condition="image">wmic.exe</Image> <!--WindowsManagementInstrumentation: Credit @Cyb3rOps [ https://gist.github.com/Neo23x0/a4b4af9481e01e749409 ] -->
 			<Image condition="image">wscript.exe</Image> <!--WindowsScriptingHost: | Credit @arekfurt -->
-			<!--Live of the Land Binaries and scripts (LOLBAS) -->
 			<Image condition="image">bitsadmin.exe</Image> <!-- Windows: Background Intelligent Transfer Service - Can download from URLs -->
 			<Image condition="image">esentutl.exe</Image> <!-- Windows: Database utilities for the ESE - Can fetch from UNC paths -->
 			<Image condition="image">expand.exe</Image> <!-- Windows: Expands one or more compressed files - Can fetch from UNC paths -->
@@ -330,7 +368,7 @@
 			<Image condition="image">Excel.exe</Image> <!-- Windows Office: Excel - Can download from URLs -->
 			<Image condition="image">Powerpnt.exe</Image> <!-- Windows Office: PowerPoint - Can download from URLs -->
 			<Image condition="image">Winword.exe</Image> <!-- Windows Office: Word - Can download from URLs -->
-			<Image condition="image">squirrel.exe</Image> <!-- Windows: Update the Nuget/Squirrel packages. Part of Teams. - Can download from URLs -->
+			<Image condition="image">squirrel.exe</Image> <!-- Windows: Update the Nuget/Squirrel packages. Part of Teams. - Can download from URLs -->														 
 			<!--Relevant 3rd Party Tools-->
 			<Image condition="image">nc.exe</Image> <!-- Nmap's modern version of netcat [ https://nmap.org/ncat/guide/index.html#ncat-overview ] [ https://securityblog.gr/1517/create-backdoor-in-windows-with-ncat/ ] -->
 			<Image condition="image">ncat.exe</Image> <!-- Nmap's modern version of netcat [ https://nmap.org/ncat/guide/index.html#ncat-overview ] [ https://securityblog.gr/1517/create-backdoor-in-windows-with-ncat/ ] -->
@@ -346,7 +384,7 @@
 			<!--Ports: Suspicious-->
 			<DestinationPort name="SSH" condition="is">22</DestinationPort> <!--SSH protocol, monitor admin connections-->
 			<DestinationPort name="Telnet" condition="is">23</DestinationPort> <!--Telnet protocol, monitor admin connections, insecure-->
-			<DestinationPort name="SMTP" condition="is">25</DestinationPort> <!--SMTP mail protocol port, insecure, used by threats-->
+			<!--<DestinationPort name="SMTP" condition="is">25</DestinationPort> --><!--SMTP mail protocol port, insecure, used by threats. Commented out as most systems use this for notifications and should be blocked at the edge.-->
 			<DestinationPort name="IMAP" condition="is">143</DestinationPort> <!--IMAP mail protocol port, insecure, used by threats-->
 			<DestinationPort name="RDP" condition="is">3389</DestinationPort> <!--Windows:RDP: Monitor admin connections-->
 			<DestinationPort name="VNC" condition="is">5800</DestinationPort> <!--VNC protocol: Monitor admin connections, often insecure, using hard-coded admin password-->
@@ -365,12 +403,16 @@
 
 	<RuleGroup name="" groupRelation="or">
 		<NetworkConnect onmatch="exclude">
+			<!-- OT OPERATIONS: If a particular application or system is noisy, consider adding some information here to tune it out. Be aware if you tune out noise you will miss good information.
+					Preference would be to not exclude even connections to trusted areas (think Active Directory, EDP, logging) as this will miss important correlation points.
+					The only thing to consider here would be vulnerability or asset management agents that communicate locally (same segment or trusted internal segment, not cloud-based).
+			-->
 			<!--SECTION: Microsoft-->
 			<Image condition="begin with">C:\ProgramData\Microsoft\Windows Defender\Platform\</Image>
-			<Image condition="end with">AppData\Local\Microsoft\Teams\current\Teams.exe</Image> <!--Microsoft: Teams-->
-			<DestinationHostname condition="end with">.microsoft.com</DestinationHostname> <!--Microsoft:Update delivery-->
-			<DestinationHostname condition="end with">microsoft.com.akadns.net</DestinationHostname> <!--Microsoft:Update delivery-->
-			<DestinationHostname condition="end with">microsoft.com.nsatc.net</DestinationHostname> <!--Microsoft:Update delivery-->
+			<!--<Image condition="end with">AppData\Local\Microsoft\Teams\current\Teams.exe</Image>--> <!--Microsoft: Teams. Should not be used in OT environments and we should be interested if it is.-->
+			<DestinationHostname condition="end with">.microsoft.com</DestinationHostname> <!--Microsoft:Update delivery. You may want to comment out if the OT environment has no internet access and you want to track connections.-->
+			<DestinationHostname condition="end with">microsoft.com.akadns.net</DestinationHostname> <!--Microsoft:Update delivery. You may want to comment out if the OT environment has no internet access and you want to track connections.-->
+			<DestinationHostname condition="end with">microsoft.com.nsatc.net</DestinationHostname> <!--Microsoft:Update delivery. You may want to comment out if the OT environment has no internet access and you want to track connections.-->
 			<!--OCSP known addresses-->
 			<DestinationIp condition="is">23.4.43.27</DestinationIp> <!--Digicert [ https://otx.alienvault.com/indicator/ip/23.4.43.27 ] -->
 			<DestinationIp condition="is">72.21.91.29</DestinationIp> <!--Digicert [ https://otx.alienvault.com/indicator/ip/72.21.91.29 ] -->
@@ -443,7 +485,7 @@
 			<SourceImage condition="is">C:\Windows\system32\winlogon.exe</SourceImage>
 			<SourceImage condition="is">C:\Windows\system32\audiodg.exe</SourceImage>
 			<StartModule condition="is">C:\Windows\system32\kernel32.dll</StartModule>
-			<TargetImage condition="is">C:\Program Files (x86)\Google\Chrome\Application\chrome.exe</TargetImage>
+			<!--<TargetImage condition="is">C:\Program Files (x86)\Google\Chrome\Application\chrome.exe</TargetImage>--><!--If you use Chrome in OT environments uncomment.-->
 		</CreateRemoteThread>
 	</RuleGroup>
 
@@ -505,13 +547,13 @@
 			<TargetFilename condition="end with">.job</TargetFilename> <!--Scheduled task-->
 			<TargetFilename condition="end with">.pptm</TargetFilename> <!--Microsoft:Office:Word: Macro-->
 			<TargetFilename condition="end with">.ps1</TargetFilename> <!--PowerShell [ More information: http://www.hexacorn.com/blog/2014/08/27/beyond-good-ol-run-key-part-16/ ] -->
-			<TargetFilename condition="end with">.sct</TargetFilename> <!--Scripting | Credit @bartblaze -->
+			<TargetFilename condition="end with">.sct</TargetFilename> <!--Scripting | Credit @bartblaze -->																					   
 			<TargetFilename condition="end with">.sys</TargetFilename> <!--System driver files-->
 			<TargetFilename condition="end with">.scr</TargetFilename> <!--System driver files-->
 			<TargetFilename condition="end with">.vbe</TargetFilename> <!--VisualBasicScripting-->
 			<TargetFilename condition="end with">.vbs</TargetFilename> <!--VisualBasicScripting-->
 			<TargetFilename condition="end with">.wsc</TargetFilename> <!--Scripting | Credit @bartblaze -->
-			<TargetFilename condition="end with">.wsf</TargetFilename> <!--Scripting | Credit @bartblaze -->
+			<TargetFilename condition="end with">.wsf</TargetFilename> <!--Scripting | Credit @bartblaze -->																				   
 			<TargetFilename condition="end with">.xlsm</TargetFilename> <!--Microsoft:Office:Word: Macro-->
 			<TargetFilename condition="end with">.ocx</TargetFilename> <!--Microsoft:ActiveX-->
 			<TargetFilename condition="end with">proj</TargetFilename><!--Microsoft:MSBuild:Script: [ https://twitter.com/subTee/status/885919612969394177 ] -->
@@ -545,7 +587,7 @@
 			<!--SECTION: Microsoft-->
 			<Image condition="is">C:\Program Files (x86)\EMET 5.5\EMET_Service.exe</Image> <!--Microsoft:EMET: Writes to C:\Windows\AppPatch\-->
 			<!--SECTION: Microsoft:Office:Click2Run-->
-			<Image condition="is">C:\Program Files\Common Files\Microsoft Shared\ClickToRun\OfficeC2RClient.exe</Image> <!-- Microsoft:Office Click2Run-->
+			<!--<Image condition="is">C:\Program Files\Common Files\Microsoft Shared\ClickToRun\OfficeC2RClient.exe</Image>--> <!-- Microsoft:Office Click2Run. If you need Office uncomment, otherwise remove it from the exclusion for visibility.-->
 			<!--SECTION: Windows-->
 			<Image condition="is">C:\Windows\system32\smss.exe</Image> <!-- Windows: Session Manager SubSystem: Creates swapfile.sys,pagefile.sys,hiberfile.sys-->
 			<Image condition="is">C:\Windows\system32\CompatTelRunner.exe</Image> <!-- Windows: Windows 10 app, creates tons of cache files-->
@@ -733,6 +775,7 @@
 	<RuleGroup name="" groupRelation="or">
 		<RegistryEvent onmatch="exclude">
 		<!--COMMENT:	Remove low-information noise. Often these hide a procress recreating an empty key and do not hide the values created subsequently.-->
+		<!-- OT OPERATIONS: As with other sections, adding exclusions can be good to filter out noise but at the cost of detection. There may be value in removing common and repeated detections across a whole deployment. Test and plan accordingly. -->
 		<!--NOTE:	A lot of noise can be removed by excluding CreateKey events, which are largely innocuous-->
 			<TargetObject condition="contains">\{CAFEEFAC-</TargetObject>
 			<EventType condition="is">CreateKey</EventType>
@@ -815,7 +858,7 @@
 			<TargetFilename condition="end with">.cmd</TargetFilename> <!--Batch scripting | Credit @ion-storm -->
 			<TargetFilename condition="end with">.doc</TargetFilename> <!--Office doc potentially with macro -->
 			<TargetFilename condition="end with">.hta</TargetFilename> <!--Scripting-->
-			<TargetFilename condition="end with">.jse</TargetFilename> <!--Registry File-->
+			<TargetFilename condition="end with">.jse</TargetFilename> <!--Registry File-->								  
 			<TargetFilename condition="end with">.lnk</TargetFilename> <!--Shortcut file | Credit @ion-storm -->
 			<TargetFilename condition="end with">.ppt</TargetFilename> <!--Office doc potentially with macros-->
 			<TargetFilename condition="end with">.ps1</TargetFilename> <!--PowerShell-->
@@ -837,7 +880,7 @@
 	<!--SYSMON EVENT ID 16 : SYSMON CONFIGURATION CHANGE-->
 		<!--EVENT 16: "Sysmon config state changed"-->
 		<!--COMMENT:	This ONLY logs if the hash of the configuration changes. Running "sysmon.exe -c" with the current configuration will not be logged with Event 16-->
-
+		
 		<!--DATA: UtcTime, Configuration, ConfigurationFileHash-->
 		<!--Cannot be filtered.-->
 
@@ -899,7 +942,27 @@
 				Chrome: https://decentsecurity.com/ublock-for-google-chrome-deployment/
 				Firefox: ToDo
 						Also note, this configuration is designed for United States computers. Your country's users will may need customization to reduce noise.
-			-->
+		-->
+
+		<!--OT OPERATIONS: Some of the original rules in the Exclude section have been removed or commented out, as OT traditional OT environments not shared with IT infrastructure and/or
+					OT environments with no internet access will still "reach out" to internet locations, but some queries we should be interested in as it would indicate an
+					abnormal or interesting event. Needs to strike a balance between reducing noise (assuming there is a default deny rule on any network egress path) and logging
+					queries for C2 or OT specific intrusions. Stopping the lookups in the first place is nearly impossible as most OSes and software expect you to have internet 
+					connectivity; determine where best to log this and tweak rules accordingly.
+
+					DNS queries are fast becoming weaponised for OT environments as this traffic usually can make it to the internet when nothing else can. Catching this early is key,
+					using Sysmon to see it is extremely useful if you don't have DNS filtering in place in the OT boundary or upstream, doubly so if you do have DNS filtering but no logging.
+
+					There is the potential to use this section for threat intel feeds to update known C2 or malware locations. Potentially can use a CI/CD process to make this more dynamic.
+		-->
+
+		<!--ACTIVE DIRECTORY OPERATIONS: I highly suggest you add your internal (ie trusted) Active Directory domain names to the exclude section. This is typically very noisy and not high value.
+					When adding DNS names, you should add 2 rules - both "end with", one with the domain name by itself, and one with the domain name ending in a full stop/period.
+					For example, add both "ot.contoso.com" and "ot.contoso.com." as rules. If you have child domains in the same forest their AD DNS queries will be captured here as they end
+					with the root forest domain name. If you share a DNS namespace with your ICT environment you will need to make a decision as to how to handle that logging. 
+					If you don't have a trust in place with your ICT AD Domain, you probably want to detect queries there.
+					If you have a trust in place with your ICT AD Domain, you probably shouldn't
+		-->
 
 		<!--CONFIG:	DNS poisoning is an issue during threat investigations. Try to only exclude ROUTINE system-level queries you know are strongly validated with HTTPS or code signing.-->
 		<!--CONFIG:	If you exclude microsoft.com, someone could register malware-microsoft.com and it wouldn't be logged. Use "END WITH" with leading . or "IS" operators.-->
@@ -926,6 +989,7 @@
 			<QueryName condition="end with">.msftncsi.com</QueryName> <!--Microsoft proxy detection | Microsoft default exclusion-->
 			<QueryName condition="is">..localmachine</QueryName>
 			<QueryName condition="is">localhost</QueryName>
+			
 			<!--Microsoft-->
 			<QueryName condition="end with">-pushp.svc.ms</QueryName> <!--Microsoft: Doesn't appear to host customer content or subdomains-->
 			<QueryName condition="end with">.b-msedge.net</QueryName> <!--Microsoft: Doesn't appear to host customer content or subdomains-->
@@ -957,7 +1021,7 @@
 			<QueryName condition="end with">.office.net</QueryName> <!--Microsoft: Office-->
 			<QueryName condition="end with">.opinsights.azure.com</QueryName> <!--Microsoft: AzureAD/InTune client event monitoring-->
 			<QueryName condition="end with">.res.office365.com</QueryName> <!--Microsoft: Office-->
-			<QueryName condition="is">acdc-direct.office.com</QueryName> <!--Microsoft: Office-->
+			<QueryName condition="is">acdc-direct.office.com</QueryName> <!--Microsoft: Office-->			
 			<QueryName condition="is">atm-fp-direct.office.com</QueryName> <!--Microsoft: Office-->
 			<QueryName condition="is">loki.delve.office.com</QueryName> <!--Microsoft: Office-->
 			<QueryName condition="is">management.azure.com</QueryName> <!--Microsoft: AzureAD/InTune-->
@@ -968,16 +1032,12 @@
 			<QueryName condition="is">substrate.office.com</QueryName> <!--Microsoft: Office-->
 			<QueryName condition="end with">.measure.office.com</QueryName> <!--Microsoft: Office-->
 			<!--3rd-party applications-->
-			<QueryName condition="end with">.adobe.com</QueryName> <!--Adobe-->
-			<QueryName condition="end with">.adobe.io</QueryName> <!--Adobe-->
 			<QueryName condition="end with">.mozaws.net</QueryName> <!--Mozilla-->
 			<QueryName condition="end with">.mozilla.com</QueryName> <!--Mozilla-->
 			<QueryName condition="end with">.mozilla.net</QueryName> <!--Mozilla-->
 			<QueryName condition="end with">.mozilla.org</QueryName> <!--Mozilla-->
 			<QueryName condition="end with">.spotify.com</QueryName> <!--Spotify-->
 			<QueryName condition="end with">.spotify.map.fastly.net</QueryName> <!--Spotify-->
-			<QueryName condition="end with">.wbx2.com</QueryName> <!--Webex-->
-			<QueryName condition="end with">.webex.com</QueryName> <!--Webex-->
 			<QueryName condition="is">clients1.google.com</QueryName> <!--Google-->
 			<QueryName condition="is">clients2.google.com</QueryName> <!--Google-->
 			<QueryName condition="is">clients3.google.com</QueryName> <!--Google-->
@@ -995,9 +1055,6 @@
 			<QueryName condition="end with">.typekit.net</QueryName> <!--Adobe fonts-->
 			<QueryName condition="is">cdnjs.cloudflare.com</QueryName>
 			<QueryName condition="end with">.stackassets.com</QueryName> <!--Stack Overflow-->
-			<QueryName condition="end with">.steamcontent.com</QueryName>
-			<QueryName condition="is">play.google.com</QueryName>
-			<QueryName condition="is">content-autofill.googleapis.com</QueryName>
 			<!--Web resources-->
 			<QueryName condition="end with">.disqus.com</QueryName> <!--Microsoft default exclusion-->
 			<QueryName condition="end with">.fontawesome.com</QueryName>
@@ -1140,39 +1197,48 @@
 			<QueryName condition="is">ocsp.int-x3.letsencrypt.org</QueryName>
 		</DnsQuery>
 	</RuleGroup>
+	
+	<!--SYSMON EVENT ID 23 : FILE DELETION -->
+		<!--EVENT 23: "File Delete"-->
 
-	<!--SYSMON EVENT ID 23 : FILE DELETE [FileDelete]-->
-		<!--EVENT 22: "File Delete"-->
-		<!--COMMENT:	Sandbox usage. When a program signals to Windows a file should be deleted or wiped, Sysmon may be able to capture it. 
-			[ https://isc.sans.edu/forums/diary/Sysmon+and+File+Deletion/26084/ ]
+		<!--ADDITIONAL REFERENCE: [ https://github.com/olafhartong/sysmon-modular/tree/master/23_file_delete ] -->
+		<!-- Configuration in this section obtained from Olaf Hartong configuration on Git. Used under MIT license. -->
+		
+		<!-- COMMENT:	FileDeletion detects when a file has been deleted or overwritten/shredded. Very useful in detecting malicious activity.
+						Event information will include what process performed the deletion, what was deleted and when it happened.
+						Depending on the file type and size, Sysmon may not detect the deletion or archive it. 
+						This list is not exhaustive, but a lot of common places things can hide. -->
+						
+		<!--OPERATIONS:	The goal is to aim for user-writable folders that could be exploited in a malicious attack. We don't want to know about every file deleted.
+						This could include software specific to your environment depending on the monitoring goal. This may be noisy if this isn't scoped properly.
+						Recovered (archived) files are saved to C:\Sysmon as per the config item at the top. Requires SYSTEM permission to access.
+						The "Archived" field will indicate if saving if the deleted file was successful.
 		-->
+		
+		<!--NOTE: This section has been removed to reduce the risk of disk space issues from archived deleted files. Using File Delete Detected rules instead. -->
 
-		<!--DATA: RuleName, UtcTime, ProcessGuid, ProcessId, User, Image, TargetFilename, Hashes, IsExecutable, Archived -->
+		<!--CONFIG:	Relies on the ArchiveDirectory setting at the top of the config file to set the location of recovered/archived files. -->
+		<!--CONFIG:	Sysmon will not archive a deleted file if there is insufficient space on the volume. -->
 
-	<!--
+		<!--CRITICAL:	Do not include all folders. This will be unmaintainable and you will run out of space. -->
+		<!--CRITICAL:	THIS IS NOT A BACKUP OR RECOVERY TOOL. Archiving the deleted file is a neat trick but is not a replacement for proper backup or recovery options. -->
+		
+		<!--DATA: UtcTime, ProcessGuid, ProcessId, User, Image, TargetFilename, Hashes, IsExecutable, Archived -->
 	<RuleGroup name="" groupRelation="or">
-		<ClipboardChange onmatch="include">
-		</ClipboardChange>
+		<FileDelete onmatch="include" />
 	</RuleGroup>
-	-->
-
+	
 	<!--SYSMON EVENT ID 24 : CLIPBOARD EVENT MONITORING [ClipboardChange]-->
-		<!--EVENT 24: "Clipboard changed"-->
-		<!--COMMENT:	Sandbox usage.  Sysmon can capture the contents of clipboard events.
-			An  example of what could be a production usage on restricted desktops is provided below, but it is commented-out. -->
+	<!--EVENT 24: "Clipboard changed"-->
+	<!--COMMENT:	Sandbox usage.  Sysmon can capture the contents of clipboard events. -->
 			
-		<!--DATA: EventType, UtcTime, ProcessGuid, ProcessId, Image, Session, ClientInfo, Hashes, Archived -->
+	<!--DATA: EventType, UtcTime, ProcessGuid, ProcessId, Image, Session, ClientInfo, Hashes, Archived -->
+    <!-- Default set to disabled due to privacy implications and potential data you leave for attackers, enable with care!-->
 
-	<!--
-	<RuleGroup name="" groupRelation="or">
-		<ClipboardChange onmatch="include">
-			<Image condition="end with">wscript.exe</Image>
-			<Image condition="end with">cscript.exe</Image>
-			<Image condition="end with">powershell.exe</Image>
-			<Image condition="end with">rdpclip.exe</Image>
-		</ClipboardChange>
-	</RuleGroup>
-	-->
+    <RuleGroup groupRelation="or">
+      <ClipboardChange onmatch="include" />									  
+    </RuleGroup>
+
 
 	<!--SYSMON EVENT ID 25 : PROCESS TAMPERING [ProcessTampering]-->
 		<!--EVENT 25: "Process Tampering"-->
@@ -1180,15 +1246,560 @@
 			This may or may not provide value in your environment as it requires tuning and a SIEM to correlate the ProcessGuids.
 			[ https://medium.com/falconforce/sysmon-13-process-tampering-detection-820366138a6c ] -->
 		
+		<!-- Configuration in this section obtained from Olaf Hartong configuration on GitHub. Used under MIT license. https://github.com/olafhartong/sysmon-modular/tree/master/25_process_tampering -->		
 		<!--DATA: EventType, RuleName, UtcTime, ProcessGuid, ProcessId, Image, Type -->
 	
-	<!--
-	<RuleGroup name="" groupRelation="or">
-		<ProcessTampering onmatch="exclude">
-			<Image condition="begin with">C:\Program Files (x86)\Microsoft\Edge\Application\</Image>
-		</ProcessTampering>
-	</RuleGroup>
+    <RuleGroup groupRelation="or">
+      <ProcessTampering onmatch="exclude">
+        <Image condition="is">C:\Program Files\Mozilla Firefox\firefox.exe</Image>
+        <Image condition="is">C:\Program Files\Mozilla Firefox\updater.exe</Image>
+        <Image condition="is">C:\Program Files\Mozilla Firefox\default-browser-agent.exe</Image>
+        <Image condition="is">C:\Program Files\Mozilla Firefox\pingsender.exe</Image>
+        <!--COMMENT: Git is unlikely to be seen in OT environments, only for workstations doing development tasks. Could be used maliciously, uncomment only if it is needed.
+	<Image condition="is">C:\Program Files\Git\cmd\git.exe</Image>
+        <Image condition="is">C:\Program Files\Git\mingw64\bin\git.exe</Image>
+        <Image condition="is">C:\Program Files\Git\mingw64\libexec\git-core\git.exe</Image>
+        <Image condition="is">C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe</Image>
 	-->
+        <Rule groupRelation="and">
+          <Image condition="begin with">C:\Program Files (x86)\Microsoft\Edge\Application\</Image>
+          <Image condition="end with">\BHO\ie_to_edge_stub.exe</Image>
+        </Rule>
+        <Rule groupRelation="and">
+          <Image condition="begin with">C:\Program Files (x86)\Microsoft\Edge\Application\</Image>
+          <Image condition="end with">\identity_helper.exe</Image>
+        </Rule>
+        <Rule groupRelation="and">
+          <Image condition="begin with">C:\Program Files (x86)\Microsoft\EdgeUpdate\Install\</Image>
+          <Image condition="contains">\MicrosoftEdge_X64_</Image>
+        </Rule>
+        <Image condition="contains">unknown process</Image>
+        <Image condition="is">C:\Program Files\Microsoft VS Code\Code.exe</Image>
+      </ProcessTampering>
+    </RuleGroup>
+	
+	<!--SYSMON EVENT ID 26 : FILE DELETE DETECTED -->
+		<!--EVENT 23: "File Delete Detected"-->
+
+		<!--ADDITIONAL REFERENCE: [ https://github.com/olafhartong/sysmon-modular/tree/master/26_file_delete_deteted ] -->
+		<!-- Configuration in this section obtained from Olaf Hartong configuration on GitHub. Used under MIT license. -->
+		
+		<!-- COMMENT:	FileDeletion detects when a file has been deleted or overwritten/shredded. Very useful in detecting malicious activity.
+						Event information will include what process performed the deletion, what was deleted and when it happened.
+						Depending on the file type and size, Sysmon may not detect the deletion or archive it. 
+						This list is not exhaustive, but a lot of common places things can hide. 
+					    The same as Event 23 however the file is not saved. -->
+						
+		<!--OPERATIONS:	The goal is to aim for user-writable folders that could be exploited in a malicious attack. We don't want to know about every file deleted.
+						This could include software specific to your environment depending on the monitoring goal. This may be noisy if this isn't scoped properly.
+						Files in this section are not archived or saved, it is only a notification of the event.
+		-->
+
+		<!--OT OPERATIONS: This section could be tuned per environment or per system this is deployed in - you may be really interested if something comes along and deletes a SCADA config!
+				Add rules using the same structure (process and file type) to narrow down what you want to see. This can also be extended with threat intel if deemed useful.
+		-->
+		
+		<!--DATA: UtcTime, ProcessGuid, ProcessId, User, Image, TargetFilename, Hashes, IsExecutable, Archived -->
+	
+	
+    <RuleGroup groupRelation="or">
+      <FileDeleteDetected onmatch="include">
+        <TargetFilename condition="contains all">C:\Program Files\Microsoft SQL Server;\Shared\ErrorDumps</TargetFilename>
+        <TargetFilename condition="contains all">C:\Program Files\Microsoft SQL Server;\DataDumps</TargetFilename>
+        <TargetFilename condition="contains all">C:\Program Files (X86)\Microsoft SQL Server\;Shared\ErrorDumps</TargetFilename>
+        <Rule groupRelation="and">
+          <TargetFilename condition="begin with">C:\Program Files\Qualys\QualysAgent</TargetFilename>
+          <TargetFilename condition="contains any">.com;.bat;.exe;.reg;.ps1;.vbs;.vba;.lnk;.doc;.xls;.hta;.bin;.7z;.dll;.xla;.cmd;.sh;.lnk;.pptm;.scr;.msi;.sct</TargetFilename>
+        </Rule>
+        <Rule groupRelation="and">
+          <TargetFilename condition="contains">\Downloads\</TargetFilename>
+          <TargetFilename condition="contains any">.com;.bat;.exe;.reg;.ps1;.vbs;.vba;.lnk;.doc;.xls;.hta;.bin;.7z;.dll;.xla;.cmd;.sh;.lnk;.pptm;.scr;.msi;.sct</TargetFilename>
+        </Rule>
+        <Rule groupRelation="and">
+          <TargetFilename condition="contains">\Appdata\Local\Temp\</TargetFilename>
+          <TargetFilename condition="contains any">.com;.bat;.exe;.reg;.ps1;.vbs;.vba;.lnk;.doc;.xls;.hta;.bin;.7z;.dll;.xla;.cmd;.sh;.lnk;.pptm;.scr;.msi;.sct</TargetFilename>
+        </Rule>
+        <Rule groupRelation="and">
+          <TargetFilename condition="contains">\Appdata\Local\Microsoft\Windows\INetCache\Content.Outlook\</TargetFilename>
+          <TargetFilename condition="contains any">.com;.bat;.exe;.reg;.ps1;.vbs;.vba;.lnk;.doc;.xls;.hta;.bin;.7z;.dll;.xla;.cmd;.sh;.lnk;.pptm;.scr;.msi;.sct</TargetFilename>
+        </Rule>
+        <Rule groupRelation="and">
+          <TargetFilename condition="begin with">C:\ProgramData\Intel</TargetFilename>
+          <TargetFilename condition="contains any">.com;.bat;.exe;.reg;.ps1;.vbs;.vba;.lnk;.doc;.xls;.hta;.bin;.7z;.dll;.xla;.cmd;.sh;.lnk;.pptm;.scr;.msi;.sct</TargetFilename>
+        </Rule>
+        <Rule groupRelation="and">
+          <TargetFilename condition="begin with">C:\ProgramData\Mozilla</TargetFilename>
+          <TargetFilename condition="contains any">.com;.bat;.exe;.reg;.ps1;.vbs;.vba;.lnk;.doc;.xls;.hta;.bin;.7z;.dll;.xla;.cmd;.sh;.lnk;.pptm;.scr;.msi;.sct</TargetFilename>
+        </Rule>
+        <Rule groupRelation="and">
+          <TargetFilename condition="begin with">C:\ProgramData\chocolatey\logs</TargetFilename>
+          <TargetFilename condition="contains any">.com;.bat;.exe;.reg;.ps1;.vbs;.vba;.lnk;.doc;.xls;.hta;.bin;.7z;.dll;.xla;.cmd;.sh;.lnk;.pptm;.scr;.msi;.sct</TargetFilename>
+        </Rule>
+        <Rule groupRelation="and">
+          <TargetFilename condition="begin with">C:\ProgramData\Microsoft\DeviceSync</TargetFilename>
+          <TargetFilename condition="contains any">.com;.bat;.exe;.reg;.ps1;.vbs;.vba;.lnk;.doc;.xls;.hta;.bin;.7z;.dll;.xla;.cmd;.sh;.lnk;.pptm;.scr;.msi;.sct</TargetFilename>
+        </Rule>
+        <Rule groupRelation="and">
+          <TargetFilename condition="begin with">C:\ProgramData\Microsoft\PlayReady</TargetFilename>
+          <TargetFilename condition="contains any">.com;.bat;.exe;.reg;.ps1;.vbs;.vba;.lnk;.doc;.xls;.hta;.bin;.7z;.dll;.xla;.cmd;.sh;.lnk;.pptm;.scr;.msi;.sct</TargetFilename>
+        </Rule>
+        <Rule groupRelation="and">
+          <TargetFilename condition="begin with">C:\ProgramData\Microsoft\User Account Pictures</TargetFilename>
+          <TargetFilename condition="contains any">.com;.bat;.exe;.reg;.ps1;.vbs;.vba;.lnk;.doc;.xls;.hta;.bin;.7z;.dll;.xla;.cmd;.sh;.lnk;.pptm;.scr;.msi;.sct</TargetFilename>
+        </Rule>
+        <Rule groupRelation="and">
+          <TargetFilename condition="begin with">C:\ProgramData\Microsoft\Crypto\DSS\MachineKeys</TargetFilename>
+          <TargetFilename condition="contains any">.com;.bat;.exe;.reg;.ps1;.vbs;.vba;.lnk;.doc;.xls;.hta;.bin;.7z;.dll;.xla;.cmd;.sh;.lnk;.pptm;.scr;.msi;.sct</TargetFilename>
+        </Rule>
+        <Rule groupRelation="and">
+          <TargetFilename condition="begin with">C:\ProgramData\Microsoft\Crypto\RSA\MachineKeys</TargetFilename>
+          <TargetFilename condition="contains any">.com;.bat;.exe;.reg;.ps1;.vbs;.vba;.lnk;.doc;.xls;.hta;.bin;.7z;.dll;.xla;.cmd;.sh;.lnk;.pptm;.scr;.msi;.sct</TargetFilename>
+        </Rule>
+        <Rule groupRelation="and">
+          <TargetFilename condition="begin with">C:\ProgramData\Microsoft\NetFramework\BreadcrumbStore</TargetFilename>
+          <TargetFilename condition="contains any">.com;.bat;.exe;.reg;.ps1;.vbs;.vba;.lnk;.doc;.xls;.hta;.bin;.7z;.dll;.xla;.cmd;.sh;.lnk;.pptm;.scr;.msi;.sct</TargetFilename>
+        </Rule>
+        <Rule groupRelation="and">
+          <TargetFilename condition="begin with">C:\ProgramData\Microsoft\Office\Heartbeat</TargetFilename>
+          <TargetFilename condition="contains any">.com;.bat;.exe;.reg;.ps1;.vbs;.vba;.lnk;.doc;.xls;.hta;.bin;.7z;.dll;.xla;.cmd;.sh;.lnk;.pptm;.scr;.msi;.sct</TargetFilename>
+        </Rule>
+        <Rule groupRelation="and">
+          <TargetFilename condition="begin with">C:\ProgramData\Microsoft\Windows\WER\ReportQueue</TargetFilename>
+          <TargetFilename condition="contains any">.com;.bat;.exe;.reg;.ps1;.vbs;.vba;.lnk;.doc;.xls;.hta;.bin;.7z;.dll;.xla;.cmd;.sh;.lnk;.pptm;.scr;.msi;.sct</TargetFilename>
+        </Rule>
+        <Rule groupRelation="and">
+          <TargetFilename condition="begin with">C:\ProgramData\Microsoft\Windows\WER\Temp</TargetFilename>
+          <TargetFilename condition="contains any">.com;.bat;.exe;.reg;.ps1;.vbs;.vba;.lnk;.doc;.xls;.hta;.bin;.7z;.dll;.xla;.cmd;.sh;.lnk;.pptm;.scr;.msi;.sct</TargetFilename>
+        </Rule>
+        <Rule groupRelation="and">
+          <TargetFilename condition="begin with">C:\ProgramData\Microsoft\Windows\WER\Temp</TargetFilename>
+          <TargetFilename condition="contains any">.com;.bat;.exe;.reg;.ps1;.vbs;.vba;.lnk;.doc;.xls;.hta;.bin;.7z;.dll;.xla;.cmd;.sh;.lnk;.pptm;.scr;.msi;.sct</TargetFilename>
+        </Rule>
+        <Rule groupRelation="and">
+          <TargetFilename condition="begin with">C:\ProgramData\Microsoft\Windows\WER\Temp</TargetFilename>
+          <TargetFilename condition="contains any">.com;.bat;.exe;.reg;.ps1;.vbs;.vba;.lnk;.doc;.xls;.hta;.bin;.7z;.dll;.xla;.cmd;.sh;.lnk;.pptm;.scr;.msi;.sct</TargetFilename>
+        </Rule>
+        <Rule groupRelation="and">
+          <TargetFilename condition="begin with">C:\ProgramData\Microsoft\Windows\WER\Temp</TargetFilename>
+          <TargetFilename condition="contains any">.com;.bat;.exe;.reg;.ps1;.vbs;.vba;.lnk;.doc;.xls;.hta;.bin;.7z;.dll;.xla;.cmd;.sh;.lnk;.pptm;.scr;.msi;.sct</TargetFilename>
+        </Rule>
+        <Rule groupRelation="and">
+          <TargetFilename condition="begin with">C:\ProgramData\Microsoft\Windows\WER\Temp</TargetFilename>
+          <TargetFilename condition="contains any">.com;.bat;.exe;.reg;.ps1;.vbs;.vba;.lnk;.doc;.xls;.hta;.bin;.7z;.dll;.xla;.cmd;.sh;.lnk;.pptm;.scr;.msi;.sct</TargetFilename>
+        </Rule>
+        <Rule groupRelation="and">
+          <TargetFilename condition="begin with">C:\Users\All Users\Intel</TargetFilename>
+          <TargetFilename condition="contains any">.com;.bat;.exe;.reg;.ps1;.vbs;.vba;.lnk;.doc;.xls;.hta;.bin;.7z;.dll;.xla;.cmd;.sh;.lnk;.pptm;.scr;.msi;.sct</TargetFilename>
+        </Rule>
+        <Rule groupRelation="and">
+          <TargetFilename condition="begin with">C:\Users\All Users\Mozilla</TargetFilename>
+          <TargetFilename condition="contains any">.com;.bat;.exe;.reg;.ps1;.vbs;.vba;.lnk;.doc;.xls;.hta;.bin;.7z;.dll;.xla;.cmd;.sh;.lnk;.pptm;.scr;.msi;.sct</TargetFilename>
+        </Rule>
+        <Rule groupRelation="and">
+          <TargetFilename condition="begin with">C:\Users\All Users\chocolatey\logs</TargetFilename>
+          <TargetFilename condition="contains any">.com;.bat;.exe;.reg;.ps1;.vbs;.vba;.lnk;.doc;.xls;.hta;.bin;.7z;.dll;.xla;.cmd;.sh;.lnk;.pptm;.scr;.msi;.sct</TargetFilename>
+        </Rule>
+        <Rule groupRelation="and">
+          <TargetFilename condition="begin with">C:\Users\All Users\Microsoft\DeviceSync</TargetFilename>
+          <TargetFilename condition="contains any">.com;.bat;.exe;.reg;.ps1;.vbs;.vba;.lnk;.doc;.xls;.hta;.bin;.7z;.dll;.xla;.cmd;.sh;.lnk;.pptm;.scr;.msi;.sct</TargetFilename>
+        </Rule>
+        <Rule groupRelation="and">
+          <TargetFilename condition="begin with">C:\Users\All Users\Microsoft\PlayReady</TargetFilename>
+          <TargetFilename condition="contains any">.com;.bat;.exe;.reg;.ps1;.vbs;.vba;.lnk;.doc;.xls;.hta;.bin;.7z;.dll;.xla;.cmd;.sh;.lnk;.pptm;.scr;.msi;.sct</TargetFilename>
+        </Rule>
+        <Rule groupRelation="and">
+          <TargetFilename condition="begin with">C:\Users\All Users\Microsoft\User Account Pictures</TargetFilename>
+          <TargetFilename condition="contains any">.com;.bat;.exe;.reg;.ps1;.vbs;.vba;.lnk;.doc;.xls;.hta;.bin;.7z;.dll;.xla;.cmd;.sh;.lnk;.pptm;.scr;.msi;.sct</TargetFilename>
+        </Rule>
+        <Rule groupRelation="and">
+          <TargetFilename condition="begin with">C:\Users\All Users\Microsoft\Crypto\DSS\MachineKeys</TargetFilename>
+          <TargetFilename condition="contains any">.com;.bat;.exe;.reg;.ps1;.vbs;.vba;.lnk;.doc;.xls;.hta;.bin;.7z;.dll;.xla;.cmd;.sh;.lnk;.pptm;.scr;.msi;.sct</TargetFilename>
+        </Rule>
+        <Rule groupRelation="and">
+          <TargetFilename condition="begin with">C:\Users\All Users\Microsoft\Crypto\RSA\MachineKeys</TargetFilename>
+          <TargetFilename condition="contains any">.com;.bat;.exe;.reg;.ps1;.vbs;.vba;.lnk;.doc;.xls;.hta;.bin;.7z;.dll;.xla;.cmd;.sh;.lnk;.pptm;.scr;.msi;.sct</TargetFilename>
+        </Rule>
+        <Rule groupRelation="and">
+          <TargetFilename condition="begin with">C:\Users\All Users\Microsoft\NetFramework\BreadcrumbStore</TargetFilename>
+          <TargetFilename condition="contains any">.com;.bat;.exe;.reg;.ps1;.vbs;.vba;.lnk;.doc;.xls;.hta;.bin;.7z;.dll;.xla;.cmd;.sh;.lnk;.pptm;.scr;.msi;.sct</TargetFilename>
+        </Rule>
+        <Rule groupRelation="and">
+          <TargetFilename condition="begin with">C:\Users\All Users\Microsoft\Office\Heartbeat</TargetFilename>
+          <TargetFilename condition="contains any">.com;.bat;.exe;.reg;.ps1;.vbs;.vba;.lnk;.doc;.xls;.hta;.bin;.7z;.dll;.xla;.cmd;.sh;.lnk;.pptm;.scr;.msi;.sct</TargetFilename>
+        </Rule>
+        <Rule groupRelation="and">
+          <TargetFilename condition="begin with">C:\Users\All Users\Microsoft\Windows\WER\ReportArchive</TargetFilename>
+          <TargetFilename condition="contains any">.com;.bat;.exe;.reg;.ps1;.vbs;.vba;.lnk;.doc;.xls;.hta;.bin;.7z;.dll;.xla;.cmd;.sh;.lnk;.pptm;.scr;.msi;.sct</TargetFilename>
+        </Rule>
+        <Rule groupRelation="and">
+          <TargetFilename condition="begin with">C:\Users\All Users\Microsoft\Windows\WER\ReportQueue</TargetFilename>
+          <TargetFilename condition="contains any">.com;.bat;.exe;.reg;.ps1;.vbs;.vba;.lnk;.doc;.xls;.hta;.bin;.7z;.dll;.xla;.cmd;.sh;.lnk;.pptm;.scr;.msi;.sct</TargetFilename>
+        </Rule>
+        <Rule groupRelation="and">
+          <TargetFilename condition="begin with">C:\Users\All Users\Microsoft\Windows\WER\Temp</TargetFilename>
+          <TargetFilename condition="contains any">.com;.bat;.exe;.reg;.ps1;.vbs;.vba;.lnk;.doc;.xls;.hta;.bin;.7z;.dll;.xla;.cmd;.sh;.lnk;.pptm;.scr;.msi;.sct</TargetFilename>
+        </Rule>
+        <Rule groupRelation="and">
+          <TargetFilename condition="begin with">C:\Windows\Tasks</TargetFilename>
+          <TargetFilename condition="contains any">.com;.bat;.exe;.reg;.ps1;.vbs;.vba;.lnk;.doc;.xls;.hta;.bin;.7z;.dll;.xla;.cmd;.sh;.lnk;.pptm;.scr;.msi;.sct</TargetFilename>
+        </Rule>
+        <Rule groupRelation="and">
+          <TargetFilename condition="begin with">C:\Windows\tracing</TargetFilename>
+          <TargetFilename condition="contains any">.com;.bat;.exe;.reg;.ps1;.vbs;.vba;.lnk;.doc;.xls;.hta;.bin;.7z;.dll;.xla;.cmd;.sh;.lnk;.pptm;.scr;.msi;.sct</TargetFilename>
+        </Rule>
+        <Rule groupRelation="and">
+          <TargetFilename condition="begin with">C:\Windows\Registration\CRMLog</TargetFilename>
+          <TargetFilename condition="contains any">.com;.bat;.exe;.reg;.ps1;.vbs;.vba;.lnk;.doc;.xls;.hta;.bin;.7z;.dll;.xla;.cmd;.sh;.lnk;.pptm;.scr;.msi;.sct</TargetFilename>
+        </Rule>
+        <Rule groupRelation="and">
+          <TargetFilename condition="begin with">C:\Windows\System32\Tasks</TargetFilename>
+          <TargetFilename condition="contains any">.com;.bat;.exe;.reg;.ps1;.vbs;.vba;.lnk;.doc;.xls;.hta;.bin;.7z;.dll;.xla;.cmd;.sh;.lnk;.pptm;.scr;.msi;.sct</TargetFilename>
+        </Rule>
+        <Rule groupRelation="and">
+          <TargetFilename condition="begin with">C:\Windows\System32\Microsoft\Crypto\RSA\MachineKeys</TargetFilename>
+          <TargetFilename condition="contains any">.com;.bat;.exe;.reg;.ps1;.vbs;.vba;.lnk;.doc;.xls;.hta;.bin;.7z;.dll;.xla;.cmd;.sh;.lnk;.pptm;.scr;.msi;.sct</TargetFilename>
+        </Rule>
+        <Rule groupRelation="and">
+          <TargetFilename condition="begin with">C:\Windows\System32\spool\drivers\color</TargetFilename>
+          <TargetFilename condition="contains any">.com;.bat;.exe;.reg;.ps1;.vbs;.vba;.lnk;.doc;.xls;.hta;.bin;.7z;.dll;.xla;.cmd;.sh;.lnk;.pptm;.scr;.msi;.sct</TargetFilename>
+        </Rule>
+        <Rule groupRelation="and">
+          <TargetFilename condition="begin with">C:\Windows\SysWOW64\Tasks</TargetFilename>
+          <TargetFilename condition="contains any">.com;.bat;.exe;.reg;.ps1;.vbs;.vba;.lnk;.doc;.xls;.hta;.bin;.7z;.dll;.xla;.cmd;.sh;.lnk;.pptm;.scr;.msi;.sct</TargetFilename>
+        </Rule>
+      </FileDeleteDetected>
+    </RuleGroup>
+    <RuleGroup groupRelation="or">
+      <FileDeleteDetected onmatch="exclude">
+        <Image condition="contains all">\appdata\local\google\chrome\user data\swreporter\;software_reporter_tool.exe</Image>
+        <Image condition="is">C:\Program Files (x86)\Google\Chrome\Application\chrome.exe</Image>
+        <User condition="contains any">NETWORK SERVICE; LOCAL SERVICE</User>
+      </FileDeleteDetected>
+    </RuleGroup>
+	
+	<!--SYSMON EVENT ID 27 : FILE BLOCK [FileBlockExecutable]-->
+		<!--EVENT 27: "File Block Executable"-->
+		<!--COMMENT:	This event is generated when an executable gets blocked.
+			[ https://medium.com/@olafhartong/sysmon-14-0-fileblockexecutable-13d7ba3dff3e ]
+		-->
+
+		<!--OT OPERATIONS: For OT environments this should be mostly safe - users should not be performing desktop activities on OT systems. Keep this list strict as making the rule more "open" will cause issues.
+			This has been tested without issue but be aware that a detection/block will not error, the executable will not run and only the Sysmon log will show why.
+			You may wish to add more IMPHASH entries based on threat information or threat intel.
+			This should not be used as a replacement for AppLocker or other application management tools.
+		-->
+
+	<RuleGroup name="ImageBlock" groupRelation="or">
+		<FileBlockExecutable onmatch="include">
+			<!-- Executables dropped to suspicious folders -->
+			<TargetFilename condition="begin with">C:\Users\Public\</TargetFilename> <!-- often used staging directories; could cause false positives --> 
+			<TargetFilename condition="begin with">C:\Perflogs\</TargetFilename> <!-- often used staging directories --> 
+			<TargetFilename condition="begin with">C:\Windows\Fonts\</TargetFilename> <!-- often used staging directories --> 
+			<TargetFilename condition="begin with">C:\Windows\debug\</TargetFilename> <!-- often used staging directories --> 
+			<TargetFilename condition="begin with">C:\Windows\Tasks\</TargetFilename> <!-- often used staging directories --> 
+			<TargetFilename condition="begin with">C:\Windows\tracing\</TargetFilename> <!-- often used staging directories --> 
+			<TargetFilename condition="begin with">C:\Windows\Help\</TargetFilename> <!-- often used staging directories --> 
+			<TargetFilename condition="begin with">C:\Windows\Logs\</TargetFilename> <!-- often used staging directories --> 
+			<TargetFilename condition="begin with">C:\Windows\System32\spool\SERVERS\</TargetFilename> <!-- often used in exploits against print spooler --> 
+			<TargetFilename condition="begin with">C:\Windows\System32\spool\PRINTERS\</TargetFilename> <!-- often used in exploits against print spooler --> 
+			<TargetFilename condition="begin with">C:\Windows\Help\</TargetFilename> <!-- often used staging directories --> 
+			<TargetFilename condition="contains all">C:\Users\;\Music\</TargetFilename> <!-- often used staging directories in User folders --> 
+			<TargetFilename condition="contains all">C:\Users\;\Pictures\</TargetFilename> <!-- often used staging directories in User folders --> 
+			<TargetFilename condition="contains all">C:\Users\;\Videos\</TargetFilename> <!-- often used staging directories in User folders --> 
+			<TargetFilename condition="contains all">C:\Users\;\Contacts\</TargetFilename> <!-- often used staging directories in User folders --> 
+			
+			<!-- Executables double extensions -->
+			<TargetFilename condition="end with">.pdf.exe</TargetFilename>
+			<TargetFilename condition="end with">.doc.exe</TargetFilename>
+			<TargetFilename condition="end with">.docx.exe</TargetFilename>
+			<TargetFilename condition="end with">.xls.exe</TargetFilename>
+			<TargetFilename condition="end with">.xlsx.exe</TargetFilename>
+			<TargetFilename condition="end with">.xlsm.exe</TargetFilename>
+			<TargetFilename condition="end with">.docm.exe</TargetFilename>
+			<TargetFilename condition="end with">.ppt.exe</TargetFilename>
+			<TargetFilename condition="end with">.pptx.exe</TargetFilename>
+			<TargetFilename condition="end with">.txt.exe</TargetFilename>
+			<TargetFilename condition="end with">.rtf.exe</TargetFilename>
+			<TargetFilename condition="end with">.htm.exe</TargetFilename>
+			<TargetFilename condition="end with">.html.exe</TargetFilename>
+			<TargetFilename condition="end with">.iso.exe</TargetFilename>
+			<TargetFilename condition="end with">.zip.exe</TargetFilename>
+			<TargetFilename condition="end with">.rar.exe</TargetFilename>
+			<TargetFilename condition="end with">.7z.exe</TargetFilename>
+
+			<!-- Tools that tamper with Sysmon -->
+			<TargetFilename condition="end with">\EntenLoader.exe</TargetFilename>
+			<TargetFilename condition="end with">\SysmonQuiet.exe</TargetFilename>
+			<TargetFilename condition="end with">\SharpEvtMute.exe</TargetFilename>
+			<TargetFilename condition="end with">\EvtMuteHook.dll</TargetFilename>
+
+			<!-- Hacktool Blocks based on Imphashes -->
+			<Hashes condition="contains">IMPHASH=BCCA3C247B619DCD13C8CDFF5F123932</Hashes> <!-- PetitPotam -->
+			<Hashes condition="contains">IMPHASH=3A19059BD7688CB88E70005F18EFC439</Hashes> <!-- PetitPotam -->
+			<Hashes condition="contains">IMPHASH=bf6223a49e45d99094406777eb6004ba</Hashes> <!-- PetitPotam -->
+			<Hashes condition="contains">IMPHASH=0C106686A31BFE2BA931AE1CF6E9DBC6</Hashes> <!-- Mimikatz -->
+			<Hashes condition="contains">IMPHASH=0D1447D4B3259B3C2A1D4CFB7ECE13C3</Hashes> <!-- Mimikatz -->
+			<Hashes condition="contains">IMPHASH=1B0369A1E06271833F78FFA70FFB4EAF</Hashes> <!-- Mimikatz -->
+			<Hashes condition="contains">IMPHASH=4C1B52A19748428E51B14C278D0F58E3</Hashes> <!-- Mimikatz -->
+			<Hashes condition="contains">IMPHASH=4D927A711F77D62CEBD4F322CB57EC6F</Hashes> <!-- Mimikatz -->
+			<Hashes condition="contains">IMPHASH=66EE036DF5FC1004D9ED5E9A94A1086A</Hashes> <!-- Mimikatz -->
+			<Hashes condition="contains">IMPHASH=672B13F4A0B6F27D29065123FE882DFC</Hashes> <!-- Mimikatz -->
+			<Hashes condition="contains">IMPHASH=6BBD59CEA665C4AFCC2814C1327EC91F</Hashes> <!-- Mimikatz -->
+			<Hashes condition="contains">IMPHASH=725BB81DC24214F6ECACC0CFB36AD30D</Hashes> <!-- Mimikatz -->
+			<Hashes condition="contains">IMPHASH=9528A0E91E28FBB88AD433FEABCA2456</Hashes> <!-- Mimikatz -->
+			<Hashes condition="contains">IMPHASH=9DA6D5D77BE11712527DCAB86DF449A3</Hashes> <!-- Mimikatz -->
+			<Hashes condition="contains">IMPHASH=A6E01BC1AB89F8D91D9EAB72032AAE88</Hashes> <!-- Mimikatz -->
+			<Hashes condition="contains">IMPHASH=B24C5EDDAEA4FE50C6A96A2A133521E4</Hashes> <!-- Mimikatz -->
+			<Hashes condition="contains">IMPHASH=D21BBC50DCC169D7B4D0F01962793154</Hashes> <!-- Mimikatz -->
+			<Hashes condition="contains">IMPHASH=FCC251CCEAE90D22C392215CC9A2D5D6</Hashes> <!-- Mimikatz -->
+			<Hashes condition="contains">IMPHASH=23867A89C2B8FC733BE6CF5EF902F2D1</Hashes> <!-- JuicyPotato  -->
+			<Hashes condition="contains">IMPHASH=A37FF327F8D48E8A4D2F757E1B6E70BC</Hashes> <!-- JuicyPotato  -->
+			<Hashes condition="contains">IMPHASH=6118619783FC175BC7EBECFF0769B46E</Hashes> <!-- RoguePotato -->
+			<Hashes condition="contains">IMPHASH=959A83047E80AB68B368FDB3F4C6E4EA</Hashes> <!-- RoguePotato -->
+			<Hashes condition="contains">IMPHASH=563233BFA169ACC7892451F71AD5850A</Hashes> <!-- RoguePotato -->
+			<Hashes condition="contains">IMPHASH=87575CB7A0E0700EB37F2E3668671A08</Hashes> <!-- RoguePotato -->
+			<Hashes condition="contains">IMPHASH=13F08707F759AF6003837A150A371BA1</Hashes> <!-- Pwdump -->
+			<Hashes condition="contains">IMPHASH=1781F06048A7E58B323F0B9259BE798B</Hashes> <!-- Pwdump -->
+			<Hashes condition="contains">IMPHASH=233F85F2D4BC9D6521A6CAAE11A1E7F5</Hashes> <!-- Pwdump -->
+			<Hashes condition="contains">IMPHASH=24AF2584CBF4D60BBE5C6D1B31B3BE6D</Hashes> <!-- Pwdump -->
+			<Hashes condition="contains">IMPHASH=632969DDF6DBF4E0F53424B75E4B91F2</Hashes> <!-- Pwdump -->
+			<Hashes condition="contains">IMPHASH=713C29B396B907ED71A72482759ED757</Hashes> <!-- Pwdump -->
+			<Hashes condition="contains">IMPHASH=749A7BB1F0B4C4455949C0B2BF7F9E9F</Hashes> <!-- Pwdump -->
+			<Hashes condition="contains">IMPHASH=8628B2608957A6B0C6330AC3DE28CE2E</Hashes> <!-- Pwdump -->
+			<Hashes condition="contains">IMPHASH=8B114550386E31895DFAB371E741123D</Hashes> <!-- Pwdump -->
+			<Hashes condition="contains">IMPHASH=94CB940A1A6B65BED4D5A8F849CE9793</Hashes> <!-- PwDumpX -->
+			<Hashes condition="contains">IMPHASH=9D68781980370E00E0BD939EE5E6C141</Hashes> <!-- Pwdump -->
+			<Hashes condition="contains">IMPHASH=B18A1401FF8F444056D29450FBC0A6CE</Hashes> <!-- Pwdump -->
+			<Hashes condition="contains">IMPHASH=CB567F9498452721D77A451374955F5F</Hashes> <!-- Pwdump -->
+			<Hashes condition="contains">IMPHASH=730073214094CD328547BF1F72289752</Hashes> <!-- Htran -->
+			<Hashes condition="contains">IMPHASH=17B461A082950FC6332228572138B80C</Hashes> <!-- Cobalt Strike beacons -->
+			<Hashes condition="contains">IMPHASH=DC25EE78E2EF4D36FAA0BADF1E7461C9</Hashes> <!-- Cobalt Strike beacons -->
+			<Hashes condition="contains">IMPHASH=819B19D53CA6736448F9325A85736792</Hashes> <!-- Cobalt Strike beacons -->
+			<Hashes condition="contains">IMPHASH=829DA329CE140D873B4A8BDE2CBFAA7E</Hashes> <!-- Cobalt Strike beacons -->
+			<Hashes condition="contains">IMPHASH=C547F2E66061A8DFFB6F5A3FF63C0A74</Hashes> <!-- PPLDump -->
+			<Hashes condition="contains">IMPHASH=0588081AB0E63BA785938467E1B10CCA</Hashes> <!-- PPLDump -->
+			<Hashes condition="contains">IMPHASH=0D9EC08BAC6C07D9987DFD0F1506587C</Hashes> <!-- NanoDump -->
+			<Hashes condition="contains">IMPHASH=BC129092B71C89B4D4C8CDF8EA590B29</Hashes> <!-- NanoDump -->
+			<Hashes condition="contains">IMPHASH=4DA924CF622D039D58BCE71CDF05D242</Hashes> <!-- NanoDump -->
+			<Hashes condition="contains">IMPHASH=E7A3A5C377E2D29324093377D7DB1C66</Hashes> <!-- NanoDump -->
+			<Hashes condition="contains">IMPHASH=9A9DBEC5C62F0380B4FA5FD31DEFFEDF</Hashes> <!-- NanoDump -->
+			<Hashes condition="contains">IMPHASH=AF8A3976AD71E5D5FDFB67DDB8DADFCE</Hashes> <!-- NanoDump -->
+			<Hashes condition="contains">IMPHASH=0C477898BBF137BBD6F2A54E3B805FF4</Hashes> <!-- NanoDump -->
+			<Hashes condition="contains">IMPHASH=0CA9F02B537BCEA20D4EA5EB1A9FE338</Hashes> <!-- NanoDump -->
+			<Hashes condition="contains">IMPHASH=3AB3655E5A14D4EEFC547F4781BF7F9E</Hashes> <!-- NanoDump -->
+			<Hashes condition="contains">IMPHASH=E6F9D5152DA699934B30DAAB206471F6</Hashes> <!-- NanoDump -->
+			<Hashes condition="contains">IMPHASH=3AD59991CCF1D67339B319B15A41B35D</Hashes> <!-- NanoDump -->
+			<Hashes condition="contains">IMPHASH=FFDD59E0318B85A3E480874D9796D872</Hashes> <!-- NanoDump -->
+			<Hashes condition="contains">IMPHASH=0CF479628D7CC1EA25EC7998A92F5051</Hashes> <!-- NanoDump -->
+			<Hashes condition="contains">IMPHASH=07A2D4DCBD6CB2C6A45E6B101F0B6D51</Hashes> <!-- NanoDump -->
+			<Hashes condition="contains">IMPHASH=D6D0F80386E1380D05CB78E871BC72B1</Hashes> <!-- NanoDump -->
+			<Hashes condition="contains">IMPHASH=38D9E015591BBFD4929E0D0F47FA0055</Hashes> <!-- HandleKatz -->
+			<Hashes condition="contains">IMPHASH=0E2216679CA6E1094D63322E3412D650</Hashes> <!-- HandleKatz -->
+			<Hashes condition="contains">IMPHASH=ADA161BF41B8E5E9132858CB54CAB5FB</Hashes> <!-- DripLoader -->
+			<Hashes condition="contains">IMPHASH=2A1BC4913CD5ECB0434DF07CB675B798</Hashes> <!-- DripLoader -->
+			<Hashes condition="contains">IMPHASH=11083E75553BAAE21DC89CE8F9A195E4</Hashes> <!-- DripLoader -->
+			<Hashes condition="contains">IMPHASH=A23D29C9E566F2FA8FFBB79267F5DF80</Hashes> <!-- DripLoader -->
+			<Hashes condition="contains">IMPHASH=4A07F944A83E8A7C2525EFA35DD30E2F</Hashes> <!-- CreateMiniDump -->
+			<Hashes condition="contains">IMPHASH=767637C23BB42CD5D7397CF58B0BE688</Hashes> <!-- UACMe Akagi -->
+			<Hashes condition="contains">IMPHASH=14C4E4C72BA075E9069EE67F39188AD8</Hashes> <!-- UACMe Akagi -->
+			<Hashes condition="contains">IMPHASH=3C782813D4AFCE07BBFC5A9772ACDBDC</Hashes> <!-- UACMe Akagi -->
+			<Hashes condition="contains">IMPHASH=7D010C6BB6A3726F327F7E239166D127</Hashes> <!-- UACMe Akagi -->
+			<Hashes condition="contains">IMPHASH=89159BA4DD04E4CE5559F132A9964EB3</Hashes> <!-- UACMe Akagi -->
+			<Hashes condition="contains">IMPHASH=6F33F4A5FC42B8CEC7314947BD13F30F</Hashes> <!-- UACMe Akagi -->
+			<Hashes condition="contains">IMPHASH=5834ED4291BDEB928270428EBBAF7604</Hashes> <!-- UACMe Akagi -->
+			<Hashes condition="contains">IMPHASH=5A8A8A43F25485E7EE1B201EDCBC7A38</Hashes> <!-- UACMe Akagi -->
+			<Hashes condition="contains">IMPHASH=DC7D30B90B2D8ABF664FBED2B1B59894</Hashes> <!-- UACMe Akagi -->
+			<Hashes condition="contains">IMPHASH=41923EA1F824FE63EA5BEB84DB7A3E74</Hashes> <!-- UACMe Akagi -->
+			<Hashes condition="contains">IMPHASH=3DE09703C8E79ED2CA3F01074719906B</Hashes> <!-- UACMe Akagi -->
+			<Hashes condition="contains">IMPHASH=A53A02B997935FD8EEDCB5F7ABAB9B9F</Hashes> <!-- WCE -->
+			<Hashes condition="contains">IMPHASH=E96A73C7BF33A464C510EDE582318BF2</Hashes> <!-- WCE -->
+			<Hashes condition="contains">IMPHASH=32089B8851BBF8BC2D014E9F37288C83</Hashes> <!-- Sliver Stagers -->
+			<Hashes condition="contains">IMPHASH=09D278F9DE118EF09163C6140255C690</Hashes> <!-- Dumpert -->
+			<Hashes condition="contains">IMPHASH=03866661686829D806989E2FC5A72606</Hashes> <!-- Dumpert -->
+			<Hashes condition="contains">IMPHASH=E57401FBDADCD4571FF385AB82BD5D6D</Hashes> <!-- Dumpert -->
+			<Hashes condition="contains">IMPHASH=84B763C45C0E4A3E7CA5548C710DB4EE</Hashes> <!-- SysmonEnte -->
+			<Hashes condition="contains">IMPHASH=19584675D94829987952432E018D5056</Hashes> <!-- SysmonQuiet -->
+			<Hashes condition="contains">MD5=7B17F15713FCF13C764535AA2BDF52AA</Hashes>													<!-- ShaprEvtMute -->
+			<Hashes condition="contains">SHA1=4E18320493042BCD7D21B53E258974BC460ACC78</Hashes>										<!-- ShaprEvtMute -->
+			<Hashes condition="contains">SHA256=477DFE485F5BD9540CC83E88FC04AAFB6DE49CF1ADC6BD857D5D6F4C1730A6D1</Hashes>	<!-- ShaprEvtMute -->
+			
+			<!-- Microsoft Office Programs Dropping Executables -->
+			<Image condition="image">winword.exe</Image>
+			<Image condition="image">excel.exe</Image>
+			<Image condition="image">powerpnt.exe</Image>
+			<Image condition="image">msaccess.exe</Image>
+			<Image condition="image">mspub.exe</Image>
+			<Image condition="image">eqnedt32.exe</Image>
+			<Image condition="image">visio.exe</Image>
+			<Image condition="image">wordpad.exe</Image>
+			<Image condition="image">wordview.exe</Image>
+			<Image condition="image">msohtmed.exe</Image>
+			
+			<!-- LOLBINs that can be used to download executables -->
+			<Image condition="image">certutil.exe</Image>
+			<Image condition="image">certoc.exe</Image>
+			<Image condition="image">CertReq.exe</Image>
+			<!-- <Image condition="image">bitsadmin.exe</Image> (depends on the environment; comment in if you're sure that bitsadmin doesn't do that in your env) -->
+			<Image condition="image">Desktopimgdownldr.exe</Image>
+			<Image condition="image">esentutl.exe</Image>
+			<!-- <Image condition="image">expand.exe</Image> (depends on the environment; comment in if you're sure that expand doesn't do that in your env) -->
+			<Image condition="image">finger.exe</Image>
+			<Image condition="image">presentationhost.exe</Image>
+
+			<!-- Executables that should never drop an executable to disk (but may after a previous process injection or if it's malware that uses a legitimate name)-->
+			<Image condition="image">notepad.exe</Image>
+			<Image condition="image">AcroRd32.exe</Image>
+			<Image condition="image">RdrCEF.exe</Image>
+			<Image condition="image">mshta.exe</Image>
+			<Image condition="image">hh.exe</Image>
+			<Image condition="image">calc.exe</Image>
+			<Image condition="image">mspaint.exe</Image>
+		</FileBlockExecutable>
+	</RuleGroup>
+
+	<!-- Event ID 28 == Fileblock Shredding events - Includes -->
+	<!-- Default set to disabled due to disk space implications, enable with care!-->
+	<RuleGroup groupRelation="or">
+		<FileBlockShredding onmatch="include" />
+	</RuleGroup>
+		
+    <!-- Event ID 29 == File Executable Detected events - Excludes -->
+    <RuleGroup groupRelation="or">
+      <FileExecutableDetected onmatch="exclude" />
+    </RuleGroup>
+    <RuleGroup groupRelation="or">
+      <CreateRemoteThread onmatch="include">
+        <SourceImage name="technique_id=T1055,technique_name=Process Injection" condition="begin with">C:\</SourceImage>
+        <SourceImage name="technique_id=T1055,technique_name=Process Injection" condition="begin with">\\</SourceImage>
+      </CreateRemoteThread>
+    </RuleGroup>
+    <RuleGroup groupRelation="or">
+      <WmiEvent onmatch="exclude" />
+    </RuleGroup>
+    <RuleGroup groupRelation="or">
+      <FileDeleteDetected onmatch="exclude">
+        <Image condition="contains all">C:\WindowsAzure\GuestAgent;\WindowsAzureGuestAgent.exe</Image>
+        <Image condition="contains all">C:\Packages\Plugins\Microsoft.Azure.Monitor.AzureMonitorWindowsAgent\;\AMAExtHealthMonitor.exe</Image>
+        <TargetFilename condition="begin with">C:\WindowsAzure\Logs\AggregateStatus\aggregatestatus</TargetFilename>
+        <Image condition="contains all">\appdata\local\google\chrome\user data\swreporter\;software_reporter_tool.exe</Image>
+        <Image condition="is">C:\Program Files (x86)\Google\Chrome\Application\chrome.exe</Image>
+        <TargetFilename condition="contains all">C:\Windows\Prefetch;.pf</TargetFilename>
+        <User condition="contains any">NETWORK SERVICE; LOCAL SERVICE</User>
+      </FileDeleteDetected>
+    </RuleGroup>
+    <RuleGroup groupRelation="or">
+      <FileExecutableDetected onmatch="include">
+        <Image name="technique_id=T1546.008,technique_name=Windows Error Reporting" condition="contains">werfault.exe</Image>
+        <Image name="technique_id=T1574.002,technique_name=DLL Side-Loading" condition="is">odbcconf.exe</Image>
+        <Image name="technique_id=T1027.004,technique_name=Compile After Delivery" condition="is">csc.exe</Image>
+        <Image name="technique_id=T1543.003,technique_name=Windows Service" condition="is">sc.exe</Image>
+        <Image name="technique_id=T1489,technique_name=Service Stop" condition="is">taskkill.exe</Image>
+        <Image name="technique_id=T1074,technique_name=Data Staged" condition="is">xcopy.exe</Image>
+        <Image name="technique_id=T1074,technique_name=Data Staged" condition="is">robocopy.exe</Image>
+        <Image name="technique_id=T,technique_name=" condition="is">makecab.exe</Image>
+        <Image name="technique_id=T1105,technique_name=Remote File Copy" condition="is">GfxDownloadWrapper.exe</Image>
+        <Image name="technique_id=T1105,technique_name=Remote File Copy" condition="is">expand.exe</Image>
+        <Image name="technique_id=T1105,technique_name=Ingress Tool Transfer" condition="is">curl.exe</Image>
+        <Image name="technique=T1105,technique_name=Ingress Tool Transfer" condition="is">ftp.exe</Image>
+        <Image name="technique_id=T1564.004,technique_name=NTFS File Attributes" condition="is">extrac32.exe</Image>
+        <Image name="technique_id=T1053.005,technique_name=Scheduled Task/Job" condition="contains any">schtasks.exe;sctasks.exe</Image>
+        <Image name="technique=T1053.002,technique_name=At" condition="contains any">at.exe;At.exe</Image>
+        <Image name="technique_id=T1053,technique_name=Scheduled Task/Job" condition="is">taskeng.exe</Image>
+        <Image name="technique_id=T1047,technique_name=Windows Management Instrumentation" condition="begin with">C:\WINDOWS\system32\wbem\scrcons.exe</Image>
+        <Image name="technique_id=T1047,technique_name=Windows Management Instrumentation" condition="is">wmiprvse.exe</Image>
+        <Image condition="is">wevtutil.exe</Image>
+        <Image name="technique_id=T1202,technique_name=Indirect Command Execution" condition="image">pcalua.exe</Image>
+        <Image name="technique_id=T1202,technique_name=Indirect Command Execution" condition="is">cscript.exe</Image>
+        <Image name="technique_id=T1202,technique_name=Indirect Command Execution" condition="is">wscript.exe</Image>
+        <Image name="technique_id=T1202,technique_name=Indirect Command Execution" condition="is">bash.exe</Image>
+        <Image name="technique_id=T1202,technique_name=Indirect Command Execution" condition="is">certutil.exe</Image>
+        <Image name="technique_id=T1202,technique_name=Indirect Command Execution" condition="is">winrs.exe</Image>
+        <Image name="technique_id=T1202,technique_name=Indirect Command Execution" condition="image">control.exe</Image>
+        <Image name="technique_id=T1202,technique_name=Indirect Command Execution" condition="is">desktopimgdownldr.exe</Image>
+        <Image name="technique_id=T1202,technique_name=Indirect Command Execution" condition="is">wsl.exe</Image>
+        <Image name="technique_id=T1218.001,technique_name=Compiled HTML File" condition="is">hh.exe</Image>
+        <Image name="technique_id=T1218.004,technique_name=InstallUtil" condition="is">installutil.exe</Image>
+        <Image name="technique_id=T1218.005,technique_name=Mshta" condition="image">mshta.exe</Image>
+        <Image name="technique_id=T1218.005,technique_name=Mshta" condition="is">mshta.exe</Image>
+        <Image name="technique_id=T1218.010,technique_name=Regsvr32" condition="is">regsvr32.exe</Image>
+        <Image name="technique_id=T1218.011,technique_name=rundll32.exe" condition="contains">rundll32.exe</Image>
+        <Image name="technique_id=T1218,technique_name=System Binary Proxy Execution" condition="is">InfDefaultInstall.EXE</Image>
+        <Image name="technique_id=T1218,technique_name=System Binary Proxy Execution" condition="is">extexport.exe</Image>
+        <Image name="technique_id=T1218,technique_name=System Binary Proxy Execution" condition="is">msconfig.EXE</Image>
+        <Image name="technique_id=T1218,technique_name=System Binary Proxy Execution" condition="is">msiexec.exe</Image>
+        <Image name="technique_id=T1218,technique_name=System Binary Proxy Execution" condition="is">odbcconf.exe</Image>
+        <Image name="technique_id=T1218,technique_name=System Binary Proxy Execution" condition="is">PresentationHost.exe</Image>
+        <Image name="technique_id=T1218,technique_name=System Binary Proxy Execution" condition="is">rasdlui.exe</Image>
+        <Image name="technique_id=T1218,technique_name=System Binary Proxy Execution" condition="is">RegisterCimProvider2.exe</Image>
+        <Image name="technique_id=T1218,technique_name=System Binary Proxy Execution" condition="is">RegisterCimProvider.exe</Image>
+        <Image name="technique_id=T1218,technique_name=System Binary Proxy Execution" condition="is">ScriptRunner.exe</Image>
+        <Image name="technique_id=T1218,technique_name=System Binary Proxy Execution" condition="is">verclsid.exe</Image>
+        <Image name="technique_id=T1218,technique_name=System Binary Proxy Execution" condition="is">wab.exe</Image>
+        <Image name="technique_id=T1218,technique_name=System Binary Proxy Execution" condition="is">wab.exe</Image>
+        <Image name="technique_id=T1218,technique_name=System Binary Proxy Execution" condition="is">wsreset.exe</Image>
+        <Image name="technique_id=T1218,technique_name=System Binary Proxy Execution" condition="is">Appvlp.exe</Image>
+        <Image name="technique_id=T1218,technique_name=System Binary Proxy Execution" condition="is">csi.exe</Image>
+        <Image name="technique_id=T1218,technique_name=System Binary Proxy Execution" condition="is">devtoolslauncher.exe</Image>
+        <Image name="technique_id=T1218,technique_name=System Binary Proxy Execution" condition="contains">Scriptrunner.exe</Image>
+        <Image name="technique_id=T1218,technique_name=System Binary Proxy Execution" condition="is">tttracer.exe</Image>
+        <Image name="technique_id=T1218,technique_name=System Binary Proxy Execution" condition="is">msdt.exe</Image>
+        <Image name="technique_id=T1218,technique_name=System Binary Proxy Execution" condition="is">rasautou.exe</Image>
+        <Image name="technique_id=T1218,technique_name=System Binary Proxy Execution" condition="is">Register-cimprovider.exe</Image>
+        <Image name="technique_id=T1218,technique_name=System Binary Proxy Execution" condition="is">diskshadow.exe</Image>
+        <Image name="technique_id=T1218,technique_name=System Binary Proxy Execution" condition="is">replace.exe</Image>
+        <Image name="technique_id=T1218,technique_name=System Binary Proxy Execution" condition="image">jjs.exe</Image>
+        <Image name="technique_id=T1218,technique_name=System Binary Proxy Execution" condition="image">appcmd.exe</Image>
+        <Image name="technique_id=T1127,technique_name=Trusted Developer Utilities Proxy Execution" condition="contains">vbc.exe</Image>
+        <Image name="technique_id=T1127,technique_name=Trusted Developer Utilities Proxy Execution" condition="is">csc.exe</Image>
+        <Image name="technique_id=T1127,technique_name=Trusted Developer Utilities Proxy Execution" condition="is">dfsvc.exe</Image>
+        <Image name="technique_id=T1127,technique_name=Trusted Developer Utilities Proxy Execution" condition="is">mftrace.exe</Image>
+        <Image name="technique_id=T1127,technique_name=Trusted Developer Utilities Proxy Execution" condition="is">dxcap.exe</Image>
+        <Image name="technique_id=T1127,technique_name=Trusted Developer Utilities Proxy Execution" condition="is">ilasm.exe</Image>
+        <Image name="technique_id=T1127,technique_name=Trusted Developer Utilities Proxy Execution" condition="is">jsc.exe</Image>
+        <Image name="technique_id=T1127,technique_name=Trusted Developer Utilities Proxy Execution" condition="is">vbc.exe</Image>
+        <Image name="technique_id=T1127,technique_name=Trusted Developer Utilities Proxy Execution" condition="is">Microsoft.Workflow.Compiler.exe</Image>
+        <Image name="technique_id=T1127,technique_name=Trusted Developer Utilities Proxy Execution" condition="is">vsjitdebugger.exe</Image>
+        <Image name="technique_id=T1127,technique_name=Trusted Developer Utilities Proxy Execution" condition="is">tracker.exe</Image>
+        <Image name="technique_id=T1127,technique_name=Trusted Developer Utilities Proxy Execution" condition="is">te.exe</Image>
+        <Image name="technique_id=T1127,technique_name=Trusted Developer Utilities Proxy Execution" condition="is">rcsi.exe</Image>
+        <Image name="technique_id=T1127,technique_name=Trusted Developer Utilities Proxy Execution" condition="is">Microsoft.Workflow.Compiler.exe</Image>
+        <Image name="technique_id=T1127,technique_name=Trusted Developer Utilities Proxy Execution" condition="is">jsc.exe</Image>
+        <Image name="technique_id=T1127,technique_name=Trusted Developer Utilities Proxy Execution" condition="is">MSBuild.exe</Image>
+        <Image name="technique_id=T1137,technique_name=Office Application Startup" condition="image">excel.exe</Image>
+        <Image name="technique_id=T1137,technique_name=Office Application Startup" condition="image">winword.exe</Image>
+        <Image name="technique_id=T1137,technique_name=Office Application Startup" condition="image">powerpnt.exe</Image>
+        <Image name="technique_id=T1137,technique_name=Office Application Startup" condition="image">outlook.exe</Image>
+        <Image name="technique_id=T1137,technique_name=Office Application Startup" condition="image">msaccess.exe</Image>
+        <Image name="technique_id=T1137,technique_name=Office Application Startup" condition="image">mspub.exe</Image>
+        <TargetFilename condition="begin with">C:\Program Files\Qualys\QualysAgent</TargetFilename>
+        <Image name="technique_id=T1059.003,technique_name=Windows Command Shell" condition="is">cmd.exe</Image>
+        <Image name="technique_id=T1059.001,technique_name=PowerShell" condition="image">powershell.exe</Image>
+        <Image name="technique_id=T1059.001,technique_name=PowerShell" condition="image">pwsh.exe</Image>
+        <Image name="technique_id=T1059.001,technique_name=PowerShell" condition="image">powershell_ise.exe</Image>
+        <Image name="technique_id=T1059.001,technique_name=PowerShell" condition="contains">Sqlps.exe</Image>
+        <TargetFilename condition="contains">\Downloads\</TargetFilename>
+        <TargetFilename condition="contains">\Appdata\Local\Temp\</TargetFilename>
+        <TargetFilename condition="contains">\Appdata\Local\Microsoft\Windows\INetCache\Content.Outlook\</TargetFilename>
+        <Image name="technique_id=T1021.006,technique_name=Windows Remote Management" condition="is">wsmprovhost.exe</Image>
+        <Image name="technique_id=T1021.006,technique_name=Windows Remote Management" condition="is">winrshost.exe</Image>
+        <Image name="technique_id=T1021.006,technique_name=Windows Remote Management" condition="image">winrm.cmd</Image>
+        <TargetFilename condition="begin with">C:\ProgramData\Intel</TargetFilename>
+        <TargetFilename condition="begin with">C:\ProgramData\Mozilla</TargetFilename>
+        <TargetFilename condition="begin with">C:\ProgramData\chocolatey\</TargetFilename>
+        <TargetFilename condition="begin with">C:\ProgramData\Microsoft\DeviceSync</TargetFilename>
+        <TargetFilename condition="begin with">C:\ProgramData\Microsoft\PlayReady</TargetFilename>
+        <TargetFilename condition="begin with">C:\ProgramData\Microsoft\User Account Pictures</TargetFilename>
+        <TargetFilename condition="begin with">C:\ProgramData\Microsoft\Office\Heartbeat</TargetFilename>
+        <TargetFilename condition="begin with">C:\ProgramData\Microsoft\Windows\WER</TargetFilename>
+        <TargetFilename condition="begin with">C:\Users\All Users\</TargetFilename>
+        <TargetFilename condition="begin with">C:\Windows\Tasks</TargetFilename>
+        <TargetFilename condition="begin with">C:\Windows\tracing</TargetFilename>
+        <TargetFilename condition="begin with">C:\Windows\System32\Tasks</TargetFilename>
+        <TargetFilename condition="begin with">C:\Windows\System32\spool\drivers\color</TargetFilename>
+        <TargetFilename condition="begin with">C:\Windows\SysWOW64\Tasks</TargetFilename>
+      </FileExecutableDetected>
+    </RuleGroup>
+
 
 	<!--SYSMON EVENT ID 255 : ERROR-->
 		<!--"This event is generated when an error occurred within Sysmon. They can happen if the system is under heavy load
